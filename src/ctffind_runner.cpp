@@ -76,7 +76,14 @@ void CtffindRunner::read(int argc, char **argv, int rank)
 	phase_step = textToFloat(parser.getOption("--phase_step", "Step in phase shift (in degrees)", "10."));
 	nr_threads = textToInteger(parser.getOption("--j", "Number of threads (for CTFIND4 only)", "1"));
 	do_fast_search = parser.checkOption("--fast_search", "Disable \"Slower, more exhaustive search\" in CTFFIND4.1 (faster but less accurate)");
-
+	do_determine_thickness = parser.checkOption("--do_determine_thickness", "Determine sample thickness from the CTFs (CTFFIND 5+)");
+	do_determine_tilt = parser.checkOption("--do_determine_tilt", "Determine sample tilt from the CTFs (CTFFIND 5+)");
+	no_brute_force1d = parser.checkOption("--no_brute_force1d", "Disable brute force 1D search in CTFFIND5");
+	no_refine2d = parser.checkOption("--no_refine2d", "Disable 2D refinement in CTFFIND5");
+	node_lowres_limit = textToFloat(parser.getOption("--node_lowres_limit", "Low resolution limit for nodes in CTFFIND5", "30"));
+	node_highres_limit = textToFloat(parser.getOption("--node_highres_limit", "High resolution limit for nodes in CTFFIND5", "3"));
+	node_rounded_square = parser.checkOption("--node_rounded_square", "Use rounded square for nodes in CTFFIND5");
+	node_downweight = parser.checkOption("--node_downweight", "Downweight nodes in CTFFIND5");
 	// Initialise verb for non-parallel execution
 	verb = 1;
 
@@ -150,6 +157,9 @@ void CtffindRunner::initialise(bool is_leader)
 
 		if (is_ctffind4 && is_ctffind5)
 			REPORT_ERROR("ERROR: You cannot enable both --is_ctffind4 and --is_ctffind5.");
+
+		if (do_determine_thickness && !is_ctffind5)
+			REPORT_ERROR("ERROR: You cannot enable --do_determine_thickness without --is_ctffind5.");
 
         if (is_tomo && (localsearch_nominal_defocus_range > 0.) && !MDin.containsLabel(EMDL_TOMO_NOMINAL_DEFOCUS))
         {
@@ -269,9 +279,9 @@ void CtffindRunner::initialise(bool is_leader)
 		if (continue_old)
 		{
 			FileName fn_microot = fn_mic_ctf_given_all[imic].withoutExtension();
-			RFLOAT defU, defV, defAng, CC, HT, CS, AmpCnst, XMAG, DStep, maxres=-1., valscore = -1., phaseshift = 0., icering = 0.;
+			RFLOAT defU, defV, defAng, CC, HT, CS, AmpCnst, XMAG, DStep, maxres=-1., valscore = -1., phaseshift = 0., icering = 0., samplethick = 0.;
 			if (getCtffindResults(fn_microot, defU, defV, defAng, CC,
-			     HT, CS, AmpCnst, XMAG, DStep, maxres, valscore, phaseshift, icering, false)) // false: dont warn if not found Final values
+			     HT, CS, AmpCnst, XMAG, DStep, maxres, valscore, phaseshift, icering, samplethick, false)) // false: dont warn if not found Final values
 			{
 				process_this = false; // already done
 			}
@@ -343,6 +353,9 @@ void CtffindRunner::initialise(bool is_leader)
 	if (is_ctffind4 && ctf_win > 0 && do_movie_thon_rings)
 		REPORT_ERROR("CtffindRunner::initialise ERROR: You cannot use a --ctfWin operation on movies.");
 
+	if (is_ctffind5 && ctf_win > 0 && do_movie_thon_rings)
+		REPORT_ERROR("CtffindRunner::initialise ERROR: You cannot use a --ctfWin operation on movies.");
+
 	if (verb > 0)
 	{
         std::cout << " Using CTFFIND executable in: " << fn_ctffind_exe << std::endl;
@@ -359,18 +372,20 @@ void CtffindRunner::run()
 
 	if (!do_only_join_results)
 	{
-		int barstep;
-		if (verb > 0)
-		{
-            if (is_ctffind4)
-                std::cout << " Estimating CTF parameters using Alexis Rohou's and Niko Grigorieff's CTFFIND4.1 ..." << std::endl;
-            else
-                std::cout << " Estimating CTF parameters using Niko Grigorieff's CTFFIND ..." << std::endl;
-			init_progress_bar(fn_micrographs.size());
-			barstep = XMIPP_MAX(1, fn_micrographs.size() / 60);
-		}
+				int barstep;
+				if (verb > 0)
+				{
+		            if (is_ctffind4)
+		                std::cout << " Estimating CTF parameters using Alexis Rohou's and Niko Grigorieff's CTFFIND4.1 ..." << std::endl;
+		            else if (is_ctffind5)
+		                std::cout << " Estimating CTF parameters using CTFFIND5 from cisTEM ..." << std::endl;
+		            else
+		                std::cout << " Estimating CTF parameters using Niko Grigorieff's CTFFIND ..." << std::endl;
+					init_progress_bar(fn_micrographs.size());
+					barstep = XMIPP_MAX(1, fn_micrographs.size() / 60);
+				}
 
-		std::vector<std::string> allmicnames;
+				std::vector<std::string> allmicnames;
 		for (long int imic = 0; imic < fn_micrographs.size(); imic++)
 		{
 
@@ -423,9 +438,9 @@ void CtffindRunner::joinCtffindResults()
 	{
 		FileName fn_microot = fn_micrographs_ctf_all[imic].withoutExtension();
 		RFLOAT defU, defV, defAng, CC, HT, CS, AmpCnst, XMAG, DStep;
-		RFLOAT maxres = -999., valscore = -999., phaseshift = -999., icering = 0.;
+		RFLOAT maxres = -999., valscore = -999., phaseshift = -999., icering = 0., samplethick = 0.;
 		bool has_this_ctf = getCtffindResults(fn_microot, defU, defV, defAng, CC,
-		                                      HT, CS, AmpCnst, XMAG, DStep, maxres, valscore, phaseshift, icering);
+		                                      HT, CS, AmpCnst, XMAG, DStep, maxres, valscore, phaseshift, icering, samplethick);
 
 		if (!has_this_ctf)
 		{
@@ -460,6 +475,11 @@ void CtffindRunner::joinCtffindResults()
 
             if (icering > 0.)
                 MDctf.setValue(EMDL_CTF_ICERINGDENSITY, icering);
+
+			if (samplethick > 0.)
+				MDctf.setValue(EMDL_CTF_SAMPLE_THICKNESS, samplethick);
+
+			// TODO: add sample thickness parameter from ctffind5
 
             if (is_tomo)
             {
@@ -503,6 +523,7 @@ void CtffindRunner::joinCtffindResults()
 	plot_labels.push_back(EMDL_CTF_FOM);
     plot_labels.push_back(EMDL_CTF_VALIDATIONSCORE);
     plot_labels.push_back(EMDL_CTF_ICERINGDENSITY);
+	plot_labels.push_back(EMDL_CTF_SAMPLE_THICKNESS);
 	FileName fn_eps, fn_eps_root = fn_out+"micrographs_ctf";
 	std::vector<FileName> all_fn_eps;
 	for (int i = 0; i < plot_labels.size(); i++)
@@ -823,14 +844,14 @@ void CtffindRunner::executeCtffind5(long int imic)
 		ctf_boxsize = XSIZE(Ihead());
 		ctf_angpix = Ihead.samplingRateX();
 	}
-	// std::string ctffind4_options = " --omp-num-threads " + integerToString(nr_threads);
-	std::string ctffind4_options = "";
+	// std::string ctffind5_options = " --omp-num-threads " + integerToString(nr_threads);
+	std::string ctffind5_options = "";
 	if (use_given_ps)
-		ctffind4_options += " --amplitude-spectrum-input";
+		ctffind5_options += " --amplitude-spectrum-input";
 
 	// Write script to run ctffind
 	fh << "#!/usr/bin/env " << fn_shell << std::endl;
-	fh << fn_ctffind_exe << ctffind4_options << " > " << fn_log << " << EOF" << std::endl;
+	fh << fn_ctffind_exe << ctffind5_options << " > " << fn_log << " << EOF" << std::endl;
 	// line 1: input image
 	if (do_movie_thon_rings)
 	{
@@ -870,7 +891,7 @@ void CtffindRunner::executeCtffind5(long int imic)
 	fh << "yes" << std::endl;
 	// Expected (tolerated) astigmatism
 	fh << amount_astigmatism << std::endl;
-	// 
+	// Find additional phase shift?
 	if (do_phaseshift)
 	{
 		fh << "yes" << std::endl;
@@ -879,9 +900,45 @@ void CtffindRunner::executeCtffind5(long int imic)
 		fh << DEG2RAD(phase_step) << std::endl;
 	}
 	else
+	{
 		fh << "no" << std::endl;
-	// Set determine sample tilt? (as of ctffind-4.1.15)
-	fh << "no" << std::endl;
+		// Set determine sample tilt? (as of ctffind-4.1.15)
+		if (do_determine_tilt)
+			fh << "yes" << std::endl;
+		else
+			fh << "no" << std::endl;
+	}
+	// Set determine sample thickness? (as of ctffind-5)
+	if (do_determine_thickness) {
+		fh << "yes" << std::endl;
+		// Use Brute force 1D search
+		if (no_brute_force1d)
+			fh << "no" << std::endl;
+		else
+			fh << "yes" << std::endl;
+		// Use 2D refinement
+		if (no_refine2d)
+			fh << "no" << std::endl;
+		else
+			fh << "yes" << std::endl;
+		// Low resolution limit for nodes
+		fh << node_lowres_limit << std::endl;
+		// High resolution limit for nodes
+		fh << node_highres_limit << std::endl;
+		// Use rounded square for nodes?
+		if (node_rounded_square)
+			fh << "yes" << std::endl;
+		else
+			fh << "no" << std::endl;
+		// Downweight nodes?
+		if (node_downweight)
+			fh << "yes" << std::endl;
+		else
+			fh << "no" << std::endl;
+	} else {
+		fh << "no" << std::endl;
+	}
+
 	// Set expert options?
 	fh << "no" << std::endl;
 
@@ -904,16 +961,23 @@ void CtffindRunner::executeCtffind5(long int imic)
 
 bool CtffindRunner::getCtffindResults(FileName fn_microot, RFLOAT &defU, RFLOAT &defV, RFLOAT &defAng, RFLOAT &CC,
 		RFLOAT &HT, RFLOAT &CS, RFLOAT &AmpCnst, RFLOAT &XMAG, RFLOAT &DStep,
-		RFLOAT &maxres, RFLOAT &valscore, RFLOAT &phaseshift, RFLOAT &icering, bool do_warn)
+		RFLOAT &maxres, RFLOAT &valscore, RFLOAT &phaseshift, RFLOAT &icering, RFLOAT &samplethick, bool do_warn)
 {
 	if (is_ctffind4)
 	{
+		samplethick = 0.;
 		return getCtffind4Results(fn_microot, defU, defV, defAng, CC, HT, CS, AmpCnst, XMAG, DStep,
 		                          maxres, phaseshift, icering, do_warn);
+	}
+	else if (is_ctffind5) // Add condition for ctffind5
+	{
+		return getCtffind5Results(fn_microot, defU, defV, defAng, CC, HT, CS, AmpCnst, XMAG, DStep,
+		                          maxres, phaseshift, icering, samplethick, do_warn);
 	}
 	else
 	{
 		icering = 0.;
+		samplethick = 0.;
         return getCtffind3Results(fn_microot, defU, defV, defAng, CC, HT, CS, AmpCnst, XMAG, DStep,
 		                          maxres, phaseshift, valscore, do_warn);
 	}
@@ -1117,3 +1181,129 @@ bool CtffindRunner::getCtffind4Results(FileName fn_microot, RFLOAT &defU, RFLOAT
 
 	return Final_is_found;
 }
+
+bool CtffindRunner::getCtffind5Results(FileName fn_microot, RFLOAT &defU, RFLOAT &defV, RFLOAT &defAng, RFLOAT &CC,
+		RFLOAT &HT, RFLOAT &CS, RFLOAT &AmpCnst, RFLOAT &XMAG, RFLOAT &DStep,
+		RFLOAT &maxres, RFLOAT &phaseshift, RFLOAT &icering, RFLOAT &samplethick, bool do_warn)
+{
+	FileName fn_root = getOutputFileWithNewUniqueDate(fn_microot, fn_out);
+	FileName fn_log = fn_root + "_ctffind5.log";
+	std::ifstream in(fn_log.data(), std::ios_base::in);
+	if (in.fail())
+    		return false;
+
+	// Start reading the ifstream at the top
+	in.seekg(0);
+	std::string line;
+	std::vector<std::string> words;
+	bool found_log = false;
+	while (getline(in, line, '\n'))
+	{
+		// Find the file with the summary of the results
+		if (line.find("Summary of results") != std::string::npos)
+		{
+			tokenize(line, words);
+			fn_log = words[words.size() - 1];
+			found_log = true;
+			break;
+		}
+	}
+	in.close();
+
+	if (!found_log)
+		return false;
+
+	// Now open the file with the summry of the results
+	std::ifstream in2(fn_log.data(), std::ios_base::in);
+	if (in2.fail())
+		return false;
+	bool Final_is_found = false;
+	bool Cs_is_found = false;
+	while (getline(in2, line, '\n'))
+	{
+		// Find data_ lines
+		if (line.find("acceleration voltage:") != std::string::npos)
+		{
+			Cs_is_found = true;
+			tokenize(line, words);
+			if (words.size() < 19)
+				REPORT_ERROR("ERROR: Unexpected number of words on data line with acceleration voltage in " + fn_log);
+			CS = textToFloat(words[13]);
+			HT = textToFloat(words[8]);
+			AmpCnst = textToFloat(words[18]);
+			DStep = textToFloat(words[3]);
+			XMAG = 10000.;
+		}
+		else if (line.find("Columns: ") != std::string::npos)
+		{
+			getline(in2, line, '\n');
+			tokenize(line, words);
+			if (words.size() < 7)
+				REPORT_ERROR("ERROR: Unexpected number of words on data line below Columns line in " + fn_log);
+			Final_is_found = true;
+			defU = textToFloat(words[1]);
+			defV = textToFloat(words[2]);
+			defAng = textToFloat(words[3]);
+			if (do_phaseshift)
+				phaseshift = RAD2DEG(textToFloat(words[4]));
+			CC = textToFloat(words[5]);
+			if (words[6] == "inf")
+				maxres= 999.;
+			else
+				maxres = textToFloat(words[6]);
+			samplethick = textToFloat(words[9]);
+		}
+	}
+
+	if (!Cs_is_found)
+	{
+		if (do_warn)
+			std::cerr << " WARNING: cannot find line with acceleration voltage etc in " << fn_log << std::endl;
+		return false;
+	}
+	if (!Final_is_found)
+	{
+		if (do_warn)
+			std::cerr << "WARNING: cannot find line with Final values in " << fn_log << std::endl;
+		return false;
+	}
+
+	in2.close();
+
+    // Also try and get rlnIceRingDensity, as suggested by Rafael Leiro from the CNIO in Madrid
+    FileName fn_avrot = fn_root + "_avrot.txt";
+    std::ifstream av(fn_avrot.data(), std::ios_base::in);
+	icering = 0.;
+    if (!av.fail())
+    {
+        std::string s1, s2;
+        //skip 5 lines
+        for(int i = 0; i < 5; ++i)
+            std::getline(av, s1);
+
+        // Now get lines 6 and 7
+        std::getline(av,s1);
+        tokenize(s1, words);
+        int imin = -999;
+        int imax = -999;
+        for (int i = 0; i < words.size(); i++)
+            if (imin < 0 && textToFloat(words[i]) >= 0.25) {
+                imin = i;
+                break;
+            }
+        for (int i = imin; i < words.size(); i++)
+            if (imax < 0 && imin > 0 && textToFloat(words[i]) > 0.28) {
+                imax = i;
+                break;
+            }
+        std::getline(av,s2);
+        tokenize(s2, words);
+        for (int i = imin; i < imax; i++)
+        {
+            icering += fabs(textToFloat(words[i]));
+        }
+    }
+
+	return Final_is_found;
+}
+
