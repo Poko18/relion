@@ -218,6 +218,9 @@ public:
 	bool getCtffind4Results(FileName fn_mic, RFLOAT &defU, RFLOAT &defV, RFLOAT &defAng, RFLOAT &CC,
 			RFLOAT &HT, RFLOAT &CS, RFLOAT &AmpCnst, RFLOAT &XMAG, RFLOAT &DStep,
 			RFLOAT &maxres, RFLOAT &phaseshift, RFLOAT &icering, bool do_warn = true);
+	bool getCtffind5Results(FileName fn_mic, RFLOAT &defU, RFLOAT &defV, RFLOAT &defAng, RFLOAT &CC,
+			RFLOAT &HT, RFLOAT &CS, RFLOAT &AmpCnst, RFLOAT &XMAG, RFLOAT &DStep,
+			RFLOAT &maxres, RFLOAT &phaseshift, RFLOAT &icering, bool do_warn = true);
 };
 
 

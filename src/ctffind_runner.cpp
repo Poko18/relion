@@ -961,7 +961,7 @@ bool CtffindRunner::getCtffindResults(FileName fn_microot, RFLOAT &defU, RFLOAT 
 	else if (is_ctffind5) // Add condition for ctffind5
 	{
 		return getCtffind5Results(fn_microot, defU, defV, defAng, CC, HT, CS, AmpCnst, XMAG, DStep,
-		                          maxres, valscore, phaseshift, icering, do_warn);
+		                          maxres, phaseshift, icering, do_warn);
 	}
 	else
 	{
