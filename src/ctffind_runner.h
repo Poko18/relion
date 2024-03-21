@@ -82,6 +82,9 @@ public:
 	// Is this ctffind4?
 	bool is_ctffind4;
 
+	// Is this ctffind5?
+	bool is_ctffind5;
+
 	// Number of OMP threads for CTFFIND4
 	int nr_threads;
 

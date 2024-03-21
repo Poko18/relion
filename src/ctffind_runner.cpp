@@ -63,8 +63,9 @@ void CtffindRunner::read(int argc, char **argv, int rank)
 	step_defocus = textToFloat(parser.getOption("--FStep", "defocus step size (in A) for search", "250"));
 	amount_astigmatism  = textToFloat(parser.getOption("--dAst", "amount of astigmatism (in A)", "0"));
 
-	int ctffind4_section = parser.addSection("CTFFIND4 parameters");
+	int ctffind4_section = parser.addSection("CTFFIND4/5 parameters");
 	is_ctffind4 = parser.checkOption("--is_ctffind4", "The provided CTFFIND executable is CTFFIND4 (version 4.1+)");
+	is_ctffind5 = parser.checkOption("--is_ctffind5", "The provided CTFFIND executable is CTFFIND5 (version 5+)");
 	use_given_ps = parser.checkOption("--use_given_ps", "Use pre-calculated power spectra?");
 	do_movie_thon_rings = parser.checkOption("--do_movie_thon_rings", "Calculate Thon rings from movie frames?");
 	avg_movie_frames = textToInteger(parser.getOption("--avg_movie_frames", "Average over how many movie frames (try to get 4 e-/A2)", "1"));
@@ -146,6 +147,9 @@ void CtffindRunner::initialise(bool is_leader)
 
 		if (use_given_ps && MDin.numberOfObjects() > 0 && !MDin.containsLabel(EMDL_CTF_POWER_SPECTRUM))
 			REPORT_ERROR("ERROR: You are using --use_given_ps, but there is no rlnCtfPowerSpectrum label in the input micrograph STAR file.");
+
+		if (is_ctffind4 && is_ctffind5)
+			REPORT_ERROR("ERROR: You cannot enable both --is_ctffind4 and --is_ctffind5.");
 
         if (is_tomo && (localsearch_nominal_defocus_range > 0.) && !MDin.containsLabel(EMDL_TOMO_NOMINAL_DEFOCUS))
         {
@@ -371,27 +375,31 @@ void CtffindRunner::run()
 		{
 
 			// Abort through the pipeline_control system
-			if (pipeline_control_check_abort_job())
-				exit(RELION_EXIT_ABORTED);
+						if (pipeline_control_check_abort_job())
+							exit(RELION_EXIT_ABORTED);
 
-			// Get angpix and voltage from the optics groups:
-			obsModel.opticsMdt.getValue(EMDL_CTF_CS, Cs, optics_group_micrographs[imic]-1);
-			obsModel.opticsMdt.getValue(EMDL_CTF_VOLTAGE, Voltage, optics_group_micrographs[imic]-1);
-			obsModel.opticsMdt.getValue(EMDL_CTF_Q0, AmplitudeConstrast, optics_group_micrographs[imic]-1);
-            EMDLabel mylabel = (is_tomo) ? EMDL_TOMO_TILT_SERIES_PIXEL_SIZE : EMDL_MICROGRAPH_PIXEL_SIZE;
-            obsModel.opticsMdt.getValue(mylabel, angpix, optics_group_micrographs[imic]-1);
+						// Get angpix and voltage from the optics groups:
+						obsModel.opticsMdt.getValue(EMDL_CTF_CS, Cs, optics_group_micrographs[imic]-1);
+						obsModel.opticsMdt.getValue(EMDL_CTF_VOLTAGE, Voltage, optics_group_micrographs[imic]-1);
+						obsModel.opticsMdt.getValue(EMDL_CTF_Q0, AmplitudeConstrast, optics_group_micrographs[imic]-1);
+			            EMDLabel mylabel = (is_tomo) ? EMDL_TOMO_TILT_SERIES_PIXEL_SIZE : EMDL_MICROGRAPH_PIXEL_SIZE;
+			            obsModel.opticsMdt.getValue(mylabel, angpix, optics_group_micrographs[imic]-1);
 
-			if (is_ctffind4)
-			{
-				executeCtffind4(imic);
-			}
-			else
-			{
-				executeCtffind3(imic);
-			}
+						if (is_ctffind4)
+						{
+							executeCtffind4(imic);
+						}
+						else if (is_ctffind5)
+						{
+							executeCtffind5(imic);
+						}
+						else
+						{
+							executeCtffind3(imic);
+						}
 
-			if (verb > 0 && imic % barstep == 0)
-				progress_bar(imic);
+						if (verb > 0 && imic % barstep == 0)
+							progress_bar(imic);
 		}
 
 		if (verb > 0)
@@ -763,6 +771,133 @@ void CtffindRunner::executeCtffind4(long int imic)
 	if (ctf_win > 0)
 	{
 		if( remove( fn_mic_win.c_str() ) != 0 )
+			std::cerr << "WARNING: there was an error deleting windowed micrograph file " << fn_mic_win << std::endl;
+	}
+}
+
+void CtffindRunner::executeCtffind5(long int imic)
+{
+	FileName fn_mic = getOutputFileWithNewUniqueDate(fn_micrographs_ctf[imic], fn_out);
+	FileName fn_root = fn_mic.withoutExtension();
+	FileName fn_script = fn_root + "_ctffind5.com";
+	FileName fn_log = fn_root + "_ctffind5.log";
+	FileName fn_ctf = fn_root + ".ctf";
+	FileName fn_mic_win;
+
+	RFLOAT my_min_defocus, my_max_defocus, my_maxres;
+	getMySearchParameters(imic, my_min_defocus, my_max_defocus, my_maxres);
+
+	std::ofstream fh;
+	fh.open((fn_script).c_str(), std::ios::out);
+	if (!fh)
+		REPORT_ERROR((std::string) "CtffindRunner::execute_ctffind cannot create file: " + fn_script);
+
+	// If given, then put a square window of ctf_win on the micrograph for CTF estimation
+	if (ctf_win > 0)
+	{
+		// Window micrograph to a smaller, squared sub-micrograph to estimate CTF on
+		fn_mic_win = fn_root + "_win.mrc";
+		// Read in micrograph, window and write out again
+		Image<RFLOAT> I;
+		I.read(fn_mic);
+		I().setXmippOrigin();
+		I().window(FIRST_XMIPP_INDEX(ctf_win), FIRST_XMIPP_INDEX(ctf_win), LAST_XMIPP_INDEX(ctf_win), LAST_XMIPP_INDEX(ctf_win));
+		// Calculate mean, stddev, min and max
+		RFLOAT avg, stddev, minval, maxval;
+		I().computeStats(avg, stddev, minval, maxval);
+		I.MDMainHeader.setValue(EMDL_IMAGE_STATS_MIN, minval);
+		I.MDMainHeader.setValue(EMDL_IMAGE_STATS_MAX, maxval);
+		I.MDMainHeader.setValue(EMDL_IMAGE_STATS_AVG, avg);
+		I.MDMainHeader.setValue(EMDL_IMAGE_STATS_STDDEV, stddev);
+		I.write(fn_mic_win);
+	}
+	else
+		fn_mic_win = fn_mic;
+
+	int ctf_boxsize = box_size;
+	RFLOAT ctf_angpix = angpix;
+	if (use_given_ps)
+	{
+		Image<RFLOAT> Ihead;
+		Ihead.read(fn_mic_win, false);
+		ctf_boxsize = XSIZE(Ihead());
+		ctf_angpix = Ihead.samplingRateX();
+	}
+	// std::string ctffind4_options = " --omp-num-threads " + integerToString(nr_threads);
+	std::string ctffind4_options = "";
+	if (use_given_ps)
+		ctffind4_options += " --amplitude-spectrum-input";
+
+	// Write script to run ctffind
+	fh << "#!/usr/bin/env " << fn_shell << std::endl;
+	fh << fn_ctffind_exe << ctffind4_options << " > " << fn_log << " << EOF" << std::endl;
+	// line 1: input image
+	if (do_movie_thon_rings)
+	{
+		fh << fn_mic_win.withoutExtension() + movie_rootname << std::endl;
+		fh << "yes" << std::endl;
+		fh << avg_movie_frames << std::endl;
+	}
+	else
+	{
+		fh << fn_mic_win << std::endl;
+	}
+
+	// line 2: diagnostic .ctf image
+	fh << fn_ctf << std::endl;
+	fh << ctf_angpix << std::endl;
+	fh << Voltage << std::endl;
+	fh << Cs << std::endl;
+	fh << AmplitudeConstrast << std::endl;
+	fh << ctf_boxsize << std::endl;
+	fh << resol_min << std::endl;
+	fh << my_maxres << std::endl;
+	fh << my_min_defocus << std::endl;
+	fh << my_max_defocus << std::endl;
+	fh << step_defocus << std::endl;
+	// Do you know what astigmatism is present?
+	fh << "no" << std::endl;
+	// Slower, more exhaustive search?
+	// The default was "no" in CTFFIND 4.1.5, but turned out to be less accurate.
+	// The default was changed to "yes" in CTFFIND 4.1.8.
+	// Ref: http://grigoriefflab.janelia.org/ctffind4
+	// So, we say "yes" regardless of the version unless "--fast_search" is specified.
+	if (!do_fast_search)
+		fh << "yes" << std::endl;
+	else
+		fh << "no" << std::endl;
+	// Use a restraint on astigmatism?
+	fh << "yes" << std::endl;
+	// Expected (tolerated) astigmatism
+	fh << amount_astigmatism << std::endl;
+	// 
+	if (do_phaseshift)
+	{
+		fh << "yes" << std::endl;
+		fh << DEG2RAD(phase_min) << std::endl;
+		fh << DEG2RAD(phase_max) << std::endl;
+		fh << DEG2RAD(phase_step) << std::endl;
+	}
+	else
+		fh << "no" << std::endl;
+	// Set determine sample tilt? (as of ctffind-4.1.15)
+	fh << "no" << std::endl;
+	// Set expert options?
+	fh << "no" << std::endl;
+
+	fh << "EOF" << std::endl;
+	fh << "exit 0" << std::endl;
+	fh.close();
+
+	// Execute ctffind
+	FileName command = fn_shell + " " + fn_script;
+	if (system(command.c_str()))
+		std::cerr << "WARNING: there was an error in executing: " << command << std::endl;
+
+	// Remove windowed file again
+	if (ctf_win > 0)
+	{
+		if (remove(fn_mic_win.c_str()) != 0)
 			std::cerr << "WARNING: there was an error deleting windowed micrograph file " << fn_mic_win << std::endl;
 	}
 }
