@@ -151,6 +151,31 @@ public:
 	// Disable "Slower, more exhaustive search?" in CTFFIND 4.1.5-
 	bool do_fast_search;
 
+	// CTFFIND 5+ parameters
+	// Determine sample thickness (CTFFIND 5)
+	bool do_determine_thickness;
+
+	// Determine sample tilt (CTFFIND 5)
+	bool do_determine_tilt;
+
+	// Dont use brute force 1D search? 
+	bool no_brute_force1d;
+
+	// Dont use 2D refinement?
+	bool no_refine2d;
+
+	// Low resolution limit for nodes
+	RFLOAT node_lowres_limit;
+
+	// High resolution limit for nodes
+	RFLOAT node_highres_limit;
+
+	// Use rounded square for nodes
+	bool node_rounded_square;
+
+	// Downweight nodes
+	bool node_downweight;
+
 	// Which GPU devices to use?
 	std::string gpu_ids;
 	std::vector < std::vector < std::string > > allThreadIDs;
@@ -179,6 +204,9 @@ public:
 
 	// Execute CTFFIND4.1+ for a single micrograph
 	void executeCtffind4(long int imic);
+
+	// Execute CTFFIND5+ for a single micrograph
+	void executeCtffind5(long int imic);
 
 	// Get micrograph metadata
 	bool getCtffindResults(FileName fn_mic, RFLOAT &defU, RFLOAT &defV, RFLOAT &defAng, RFLOAT &CC,
