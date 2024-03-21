@@ -279,9 +279,9 @@ void CtffindRunner::initialise(bool is_leader)
 		if (continue_old)
 		{
 			FileName fn_microot = fn_mic_ctf_given_all[imic].withoutExtension();
-			RFLOAT defU, defV, defAng, CC, HT, CS, AmpCnst, XMAG, DStep, maxres=-1., valscore = -1., phaseshift = 0., icering = 0.;
+			RFLOAT defU, defV, defAng, CC, HT, CS, AmpCnst, XMAG, DStep, maxres=-1., valscore = -1., phaseshift = 0., icering = 0., samplethick = 0.;
 			if (getCtffindResults(fn_microot, defU, defV, defAng, CC,
-			     HT, CS, AmpCnst, XMAG, DStep, maxres, valscore, phaseshift, icering, false)) // false: dont warn if not found Final values
+			     HT, CS, AmpCnst, XMAG, DStep, maxres, valscore, phaseshift, icering, samplethick, false)) // false: dont warn if not found Final values
 			{
 				process_this = false; // already done
 			}
@@ -440,7 +440,7 @@ void CtffindRunner::joinCtffindResults()
 		RFLOAT defU, defV, defAng, CC, HT, CS, AmpCnst, XMAG, DStep;
 		RFLOAT maxres = -999., valscore = -999., phaseshift = -999., icering = 0.;
 		bool has_this_ctf = getCtffindResults(fn_microot, defU, defV, defAng, CC,
-		                                      HT, CS, AmpCnst, XMAG, DStep, maxres, valscore, phaseshift, icering);
+		                                      HT, CS, AmpCnst, XMAG, DStep, maxres, valscore, phaseshift, icering, samplethick);
 
 		if (!has_this_ctf)
 		{
@@ -475,6 +475,9 @@ void CtffindRunner::joinCtffindResults()
 
             if (icering > 0.)
                 MDctf.setValue(EMDL_CTF_ICERINGDENSITY, icering);
+
+			if (samplethick > 0.)
+				MDctf.setValue(EMDL_CTF_SAMPLE_THICKNESS, samplethick);
 
 			// TODO: add sample thickness parameter from ctffind5
 
@@ -520,6 +523,7 @@ void CtffindRunner::joinCtffindResults()
 	plot_labels.push_back(EMDL_CTF_FOM);
     plot_labels.push_back(EMDL_CTF_VALIDATIONSCORE);
     plot_labels.push_back(EMDL_CTF_ICERINGDENSITY);
+	plot_labels.push_back(EMDL_CTF_SAMPLE_THICKNESS);
 	FileName fn_eps, fn_eps_root = fn_out+"micrographs_ctf";
 	std::vector<FileName> all_fn_eps;
 	for (int i = 0; i < plot_labels.size(); i++)
@@ -885,6 +889,8 @@ void CtffindRunner::executeCtffind5(long int imic)
 		fh << "no" << std::endl;
 	// Use a restraint on astigmatism?
 	fh << "yes" << std::endl;
+	// Expected (tolerated) astigmatism
+	fh << amount_astigmatism << std::endl;
 	// Find additional phase shift?
 	if (do_phaseshift)
 	{
@@ -894,41 +900,45 @@ void CtffindRunner::executeCtffind5(long int imic)
 		fh << DEG2RAD(phase_step) << std::endl;
 	}
 	else
+	{
 		fh << "no" << std::endl;
-	// Set determine sample tilt? (as of ctffind-4.1.15)
-	if (do_determine_tilt)
-		fh << "yes" << std::endl;
-	else
-		fh << "no" << std::endl;
+		// Set determine sample tilt? (as of ctffind-4.1.15)
+		if (do_determine_tilt)
+			fh << "yes" << std::endl;
+		else
+			fh << "no" << std::endl;
+	}
 	// Set determine sample thickness? (as of ctffind-5)
-	if (do_determine_thickness)
+	if (do_determine_thickness) {
 		fh << "yes" << std::endl;
-	else
+		// Use Brute force 1D search
+		if (no_brute_force1d)
+			fh << "no" << std::endl;
+		else
+			fh << "yes" << std::endl;
+		// Use 2D refinement
+		if (no_refine2d)
+			fh << "no" << std::endl;
+		else
+			fh << "yes" << std::endl;
+		// Low resolution limit for nodes
+		fh << node_lowres_limit << std::endl;
+		// High resolution limit for nodes
+		fh << node_highres_limit << std::endl;
+		// Use rounded square for nodes?
+		if (node_rounded_square)
+			fh << "yes" << std::endl;
+		else
+			fh << "no" << std::endl;
+		// Downweight nodes?
+		if (node_downweight)
+			fh << "yes" << std::endl;
+		else
+			fh << "no" << std::endl;
+	} else {
 		fh << "no" << std::endl;
-	// Use Brute force 1D search
-	if (no_brute_force1d)
-		fh << "no" << std::endl;
-	else
-		fh << "yes" << std::endl;
-	// Use 2D refinement
-	if (no_refine2d)
-		fh << "no" << std::endl;
-	else
-		fh << "yes" << std::endl;
-	// Low resolution limit for nodes
-	fh << node_lowres_limit << std::endl;
-	// High resolution limit for nodes
-	fh << node_highres_limit << std::endl;
-	// Use rounded square for nodes?
-	if (node_rounded_square)
-		fh << "yes" << std::endl;
-	else
-		fh << "no" << std::endl;
-	// Downweight nodes?
-	if (node_downweight)
-		fh << "yes" << std::endl;
-	else
-		fh << "no" << std::endl;
+	}
+
 	// Set expert options?
 	fh << "no" << std::endl;
 
@@ -951,21 +961,23 @@ void CtffindRunner::executeCtffind5(long int imic)
 
 bool CtffindRunner::getCtffindResults(FileName fn_microot, RFLOAT &defU, RFLOAT &defV, RFLOAT &defAng, RFLOAT &CC,
 		RFLOAT &HT, RFLOAT &CS, RFLOAT &AmpCnst, RFLOAT &XMAG, RFLOAT &DStep,
-		RFLOAT &maxres, RFLOAT &valscore, RFLOAT &phaseshift, RFLOAT &icering, bool do_warn)
+		RFLOAT &maxres, RFLOAT &valscore, RFLOAT &phaseshift, RFLOAT &icering, RFLOAT &samplethick, bool do_warn)
 {
 	if (is_ctffind4)
 	{
+		samplethick = 0.;
 		return getCtffind4Results(fn_microot, defU, defV, defAng, CC, HT, CS, AmpCnst, XMAG, DStep,
 		                          maxres, phaseshift, icering, do_warn);
 	}
 	else if (is_ctffind5) // Add condition for ctffind5
 	{
 		return getCtffind5Results(fn_microot, defU, defV, defAng, CC, HT, CS, AmpCnst, XMAG, DStep,
-		                          maxres, phaseshift, icering, do_warn);
+		                          maxres, phaseshift, icering, samplethick, do_warn);
 	}
 	else
 	{
 		icering = 0.;
+		samplethick = 0.;
         return getCtffind3Results(fn_microot, defU, defV, defAng, CC, HT, CS, AmpCnst, XMAG, DStep,
 		                          maxres, phaseshift, valscore, do_warn);
 	}
@@ -1172,7 +1184,7 @@ bool CtffindRunner::getCtffind4Results(FileName fn_microot, RFLOAT &defU, RFLOAT
 
 bool CtffindRunner::getCtffind5Results(FileName fn_microot, RFLOAT &defU, RFLOAT &defV, RFLOAT &defAng, RFLOAT &CC,
 		RFLOAT &HT, RFLOAT &CS, RFLOAT &AmpCnst, RFLOAT &XMAG, RFLOAT &DStep,
-		RFLOAT &maxres, RFLOAT &phaseshift, RFLOAT &icering, bool do_warn)
+		RFLOAT &maxres, RFLOAT &phaseshift, RFLOAT &icering, RFLOAT &samplethick, bool do_warn)
 {
 	FileName fn_root = getOutputFileWithNewUniqueDate(fn_microot, fn_out);
 	FileName fn_log = fn_root + "_ctffind5.log";
@@ -1239,6 +1251,7 @@ bool CtffindRunner::getCtffind5Results(FileName fn_microot, RFLOAT &defU, RFLOAT
 				maxres= 999.;
 			else
 				maxres = textToFloat(words[6]);
+			samplethick = textToFloat(words[9]);
 		}
 	}
 
